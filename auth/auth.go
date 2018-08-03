@@ -23,45 +23,62 @@ var (
 )
 
 func init() {
-	Cookie, _ = generateCookie()
-	CsrfToken, _ = generateCsrfToken()
+	now := time.Now().Unix()
+	Cookie, _ = generateCookie(now, authPrivateKey)
+	CsrfToken, _ = generateCsrfToken(now, pveKey)
 }
 
-func generateCookie() (string, error) {
+func generateCookie(now int64, keyfile string) (string, error) {
 
-	timestamp := fmt.Sprintf("%08X", time.Now().Unix())
+	timestamp := fmt.Sprintf("%08X", now)
 	message := fmt.Sprintf("PVE:root@pam:%s", timestamp)
-	hashed := sha1.Sum([]byte(message))
-
-	authKeyContent, err := ioutil.ReadFile(authPrivateKey)
+	signature, err := signMessageWithKey(message, keyfile)
 	if err != nil {
-		return "", fmt.Errorf("Could not read auth private key")
+		return "", err
 	}
-	block, _ := pem.Decode(authKeyContent)
+	return fmt.Sprintf("PVEAuthCookie=%s::%s", message, signature), nil
+}
+
+func signMessageWithKey(message string, keyfile string) (string, error) {
+
+	keyContent, err := ioutil.ReadFile(keyfile)
+	if err != nil {
+		return "", fmt.Errorf("Could not read private key : %v", err)
+	}
+
+	block, _ := pem.Decode(keyContent)
+	if block == nil {
+		return "", fmt.Errorf("Could not decode private key : %v", err)
+	}
 
 	key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
 	if err != nil {
-		return "", fmt.Errorf("Could not parse auth private key")
+		return "", fmt.Errorf("Could not parse private key : %v", err)
 	}
 
-	signature, err := rsa.SignPKCS1v15(nil, key, crypto.SHA1, hashed[:])
+	hashedMessage := sha1.Sum([]byte(message))
+	signature, err := rsa.SignPKCS1v15(nil, key, crypto.SHA1, hashedMessage[:])
 	if err != nil {
-		return "", fmt.Errorf("Could not sign with auth private key")
+		return "", fmt.Errorf("Could not sign with auth private key : %v", err)
 	}
 
-	return fmt.Sprintf("PVEAuthCookie=%s::%s", message, base64.StdEncoding.EncodeToString(signature)), nil
+	return base64.StdEncoding.EncodeToString(signature), nil
 }
 
-func generateCsrfToken() (string, error) {
+func generateCsrfToken(now int64, keyfile string) (string, error) {
 
-	timestamp := fmt.Sprintf("%08X", time.Now().Unix())
-	pveKeyContent, err := ioutil.ReadFile(pveKey)
+	timestamp := fmt.Sprintf("%08X", now)
+	pveKeyContent, err := ioutil.ReadFile(keyfile)
 	if err != nil {
-		return "", fmt.Errorf("Could not read pve www key")
+		return "", fmt.Errorf("Could not read pve www key : %v", err)
 	}
-	hashed := sha1.Sum(pveKeyContent)
-	secret := base64.RawStdEncoding.EncodeToString(hashed[:])
-	hashed = sha1.Sum([]byte(fmt.Sprintf("%s:root@pam%s", timestamp, secret)))
-	csrfToken := base64.RawStdEncoding.EncodeToString(hashed[:])
+
+	secret := sha1Base64(pveKeyContent)
+	csrfToken := sha1Base64([]byte(fmt.Sprintf("%s:root@pam%s", timestamp, secret)))
 	return fmt.Sprintf("CSRFPreventionToken:%s:%s", timestamp, csrfToken), nil
+}
+
+func sha1Base64(data []byte) string {
+	hashedData := sha1.Sum(data)
+	return base64.RawStdEncoding.EncodeToString(hashedData[:])
 }
